@@ -1,13 +1,19 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-const DB_PATH = path.join(__dirname, '../db/prices.db');
+const DB_PATH = path.join(__dirname, 'prices.db');
 const db = new sqlite3.Database(DB_PATH);
 
 
-db.get("SELECT 1", (err) => {
-  if (err) console.error("❌ DB connection failed:", err.message);
-  else console.log("✅ DB connected");
+db.serialize(() => {
+  db.run(`
+    CREATE TABLE IF NOT EXISTS prices (
+      date TEXT PRIMARY KEY,
+      price REAL NOT NULL
+    )
+  `);
 });
+
+process.on('exit', () => db.close());
 
 module.exports = db;
