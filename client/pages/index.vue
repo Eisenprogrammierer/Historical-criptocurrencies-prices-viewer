@@ -1,32 +1,36 @@
-<script setup>
-const selectedPeriod = ref('week')
-const chartData = ref([])
-
-const fetchData = async () => {
-  try {
-    const { data } = await useFetch('/api/history', {
-      params: { period: selectedPeriod.value }
-    })
-    chartData.value = data.value
-  } catch (err) {
-    console.error('Failed to fetch data:', err)
-  }
-}
-
-watch(selectedPeriod, fetchData)
-onMounted(fetchData)
-</script>
-
 <template>
-  <div class="container">
-    <DateSelector v-model="selectedPeriod" />
-    <ChartWrapper 
-      v-if="chartData.length" 
-      :data="chartData" 
-      :period="selectedPeriod"
+  <div>
+    <Chart 
+      :prices="chartData" 
+      :loading="isLoading"
     />
-    <div v-else class="loading">
-      Loading data...
-    </div>
   </div>
 </template>
+
+<script>
+import Chart from '~/components/Chart.vue'
+
+export default {
+  components: { Chart },
+  data() {
+    return {
+      isLoading: false,
+      chartData: [] // Массив вида [{ date: '2023-01-01', price: 16500 }, ...]
+    }
+  },
+  async mounted() {
+    await this.loadData()
+  },
+  methods: {
+    async loadData() {
+      this.isLoading = true
+      try {
+        const { data } = await this.$axios.get('/api/history?period=year')
+        this.chartData = data
+      } finally {
+        this.isLoading = false
+      }
+    }
+  }
+}
+</script>
