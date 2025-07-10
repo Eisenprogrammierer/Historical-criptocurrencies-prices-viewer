@@ -1,91 +1,123 @@
-const coingecko = require('./coingecko-service');
-const db = require('./config/db');
-const fs = require('fs');
+const { API_CONFIG, DATA_CONFIG } = require('./data_collector/config')
+const db = require('./server/config/db')
+const https = require('https')
+const fs = require('fs')
 
 
 class DataCollector {
   constructor() {
-    this.coinId = 'bitcoin';
-    this.startDate = new Date('2015-01-01');
-    this.endDate = new Date();
-    this.chunkSizeDays = 90;
+    this.requestCount = 0
+    this.coinId = DATA_CONFIG.coinId
+    this.startDate = new Date(DATA_CONFIG.dateRange.start)
+    this.endDate = new Date(DATA_CONFIG.dateRange.end)
+    this.currentDate = new Date(this.startDate)
   }
 
   async start() {
-    console.log('Starting bulk historical data collection');
-    
-    let currentStart = new Date(this.startDate);
-    
-    while (currentStart < this.endDate) {
-      const currentEnd = new Date(currentStart);
-      currentEnd.setDate(currentEnd.getDate() + this.chunkSizeDays);
-      
-      if (currentEnd > this.endDate) {
-        currentEnd = new Date(this.endDate);
+    console.log('Starting data collection...')
+    this.loadProgress()
+
+    while (this.currentDate <= this.endDate) {
+      const chunkEnd = new Date(this.currentDate)
+      chunkEnd.setDate(chunkEnd.getDate() + DATA_CONFIG.chunkSizeDays)
+
+      if (chunkEnd > this.endDate) {
+        chunkEnd = new Date(this.endDate)
       }
 
       try {
-        console.log(`📅 Fetching ${currentStart.toISOString()} to ${currentEnd.toISOString()}`);
-        const result = await coingecko.fetchMarketRange(
-          this.coinId,
-          currentStart,
-          currentEnd
-        );
-
-        await this.processData(result.prices);
-        this.saveProgress(currentEnd);
-        
+        await this.processChunk(this.currentDate, chunkEnd)
+        this.saveProgress(chunkEnd)
       } catch (err) {
-        console.error('❌ Chunk failed:', err.message);
-        await this.wait(30000);
+        console.error(`❌ Failed chunk ${this.currentDate.toISOString()} - ${chunkEnd.toISOString()}:`, err.message)
+        await this.wait(30000)
       }
 
-      currentStart = new Date(currentEnd);
-      currentStart.setDate(currentStart.getDate() + 1);
+      this.currentDate = new Date(chunkEnd)
+      this.currentDate.setDate(this.currentDate.getDate() + 1)
       
-      await this.wait(7000);
+      await this.wait(API_CONFIG.rateLimits.intervalMs)
     }
 
-    console.log('✅ Historical data complete!');
+    console.log('✅ Data collection complete!')
   }
 
-  async processData(prices) {
-    for (const [timestamp, price] of prices) {
-      const date = new Date(timestamp).toISOString().split('T')[0];
-      await this.saveToDB(date, price);
+  async processChunk(startDate, endDate) {
+    if (this.requestCount >= API_CONFIG.rateLimits.requestsPerMinute) {
+      console.log('⚠️ Rate limit reached. Waiting...')
+      await this.wait(API_CONFIG.rateLimits.intervalMs)
+      this.requestCount = 0
     }
+
+    console.log(`📅 Processing ${startDate.toISOString()} to ${endDate.toISOString()}`)
+    
+    const data = await this.fetchData(startDate, endDate)
+    await this.saveToDatabase(data)
+    
+    this.requestCount++
   }
 
-  async saveToDB(date, price) {
+  async fetchData(startDate, endDate) {
+    const startTimestamp = Math.floor(startDate.getTime() / 1000)
+    const endTimestamp = Math.floor(endDate.getTime() / 1000)
+    
+    const url = `${API_CONFIG.baseUrl}${API_CONFIG.endpoints.marketRange}`
+      .replace('{id}', this.coinId)
+      + `?vs_currency=usd&from=${startTimestamp}&to=${endTimestamp}`
+
     return new Promise((resolve, reject) => {
-      db.run(
-        'INSERT OR REPLACE INTO prices (date, price) VALUES (?, ?)',
-        [date, price],
-        (err) => err ? reject(err) : resolve()
-      );
-    });
+      https.get(url, (res) => {
+        let data = ''
+        
+        res.on('data', (chunk) => data += chunk)
+        res.on('end', () => {
+          try {
+            resolve(JSON.parse(data).prices)
+          } catch (err) {
+            reject(new Error(`Failed to parse response: ${err.message}`))
+          }
+        })
+      }).on('error', reject)
+    })
+  }
+
+  async saveToDatabase(prices) {
+    for (const [timestamp, price] of prices) {
+      const date = new Date(timestamp).toISOString().split('T')[0]
+      
+      await new Promise((resolve, reject) => {
+        db.run(
+          'INSERT OR REPLACE INTO prices (date, price) VALUES (?, ?)',
+          [date, price],
+          (err) => err ? reject(err) : resolve()
+        )
+      })
+    }
+  }
+
+  loadProgress() {
+    if (fs.existsSync(DATA_CONFIG.progressFile)) {
+      const progress = JSON.parse(fs.readFileSync(DATA_CONFIG.progressFile))
+      this.currentDate = new Date(progress.lastDate)
+      console.log(`↩️ Resuming from ${progress.lastDate}`)
+    }
   }
 
   saveProgress(lastDate) {
     fs.writeFileSync(
-      './progress.json',
+      DATA_CONFIG.progressFile,
       JSON.stringify({ lastDate: lastDate.toISOString() })
-    );
+    )
   }
 
-  async wait(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+  wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms))
   }
 }
 
 
-const collector = new DataCollector();
-
-
-if (fs.existsSync('./progress.json')) {
-  const progress = JSON.parse(fs.readFileSync('./progress.json'));
-  collector.startDate = new Date(progress.lastDate);
-  console.log('Resuming from:', progress.lastDate);
-}
-
-collector.start();
+const collector = new DataCollector()
+collector.start().catch(err => {
+  console.error('Fatal error:', err)
+  process.exit(1)
+})
