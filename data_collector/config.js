@@ -4,7 +4,7 @@ const API_CONFIG = {
     marketRange: '/coins/{id}/market_chart/range'
   },
   rateLimits: {
-    requestsPerMinute: 8,
+    requestsPerMinute: 9,
     intervalMs: 61000,
     maxRetries: 3
   }

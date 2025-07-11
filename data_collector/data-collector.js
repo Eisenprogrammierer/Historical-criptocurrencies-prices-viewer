@@ -1,5 +1,5 @@
-const { API_CONFIG, DATA_CONFIG } = require('./data_collector/config')
-const db = require('./server/config/db')
+const { API_CONFIG, DATA_CONFIG } = require('./config')
+const db = require('../server/config/db')
 const https = require('https')
 const fs = require('fs')
 
